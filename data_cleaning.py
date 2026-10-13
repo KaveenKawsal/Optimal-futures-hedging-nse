@@ -8,10 +8,10 @@ nifty_master.csv.
 
 Rollover Rule
 -------------
-NIFTY monthly futures expire on the last Thursday of each calendar month.
-We roll from the near-month to the next-month contract 5 trading days
-before the effective expiry date, to avoid the final-settlement-price
-artifact and thin trading near expiry.
+Expiry dates come from the actual contract rows, supporting historical
+calendar changes without a hard-coded weekday. We roll to the next contract
+on the fifth observed trading session before expiry. Returns use the same
+contract on both dates, so switching contracts does not create a fake gain.
 
 Returns
 -------
@@ -19,16 +19,18 @@ Daily log returns: r_t = ln(P_t / P_{t-1}).
 
 Output columns
 --------------
-Date, Spot_Price, Futures_Price, Spot_Return, Futures_Return, Basis
+Date, Spot_Price, Futures_Price, Spot_Return, Futures_Return, Basis,
+Active_Expiry, Is_Roll_Day
 
 Usage
 -----
     python3 data_cleaning.py
 """
 
+import argparse
+import calendar
 import os
 import sys
-import calendar
 from datetime import date
 
 import numpy as np
@@ -41,6 +43,18 @@ MASTER_CSV = "nifty_master.csv"
 
 # -- rollover parameter -------------------------------------------------------
 ROLL_DAYS_BEFORE_EXPIRY = 5
+
+
+def legacy_lot_size(trading_date, expiry):
+    """NIFTY monthly futures lots for legacy files (2020 to July 2024).
+
+    Sources: NSE FAOP/47854 (2021) and FAOP/61415 (2024).
+    The April 2024 revision changed existing non-April contracts on April 26.
+    UDiFF files carry their own contract-level NewBrdLotQty instead.
+    """
+    if trading_date >= pd.Timestamp("2024-04-26") and expiry > pd.Timestamp("2024-04-25"):
+        return 25
+    return 50 if expiry >= pd.Timestamp("2021-07-01") else 75
 
 
 # -----------------------------------------------------------------------------
@@ -110,14 +124,13 @@ def load_futures(path: str) -> pd.DataFrame:
             & (old["SYMBOL"].astype(str).str.strip().str.upper() == "NIFTY")
         ]
         if len(old):
-            old = old.rename(
-                columns={"TIMESTAMP": "Date", "EXPIRY_DT": "Expiry", "CLOSE": "Close"}
-            )
-            old["Date"] = pd.to_datetime(old["Date"], dayfirst=True, errors="coerce")
-            old["Expiry"] = pd.to_datetime(old["Expiry"], dayfirst=True, errors="coerce")
+            old = old.rename(columns={"TIMESTAMP": "Date", "EXPIRY_DT": "Expiry", "CLOSE": "Close"})
+            old["Date"] = pd.to_datetime(old["Date"], format="%d-%b-%Y", errors="coerce")
+            old["Expiry"] = pd.to_datetime(old["Expiry"], format="%d-%b-%Y", errors="coerce")
             old["Close"] = pd.to_numeric(old["Close"], errors="coerce")
             old = old.dropna(subset=["Date", "Expiry", "Close"])
-            frames.append(old[["Date", "Expiry", "Close"]])
+            old["Lot_Size"] = [legacy_lot_size(d, e) for d, e in zip(old["Date"], old["Expiry"])]
+            frames.append(old[["Date", "Expiry", "Close", "Lot_Size"]])
 
     if new_cols.issubset(raw.columns):
         new = raw[raw["FinInstrmTp"].notna() & raw["TradDt"].notna()].copy()
@@ -126,14 +139,15 @@ def load_futures(path: str) -> pd.DataFrame:
             & (new["TckrSymb"].astype(str).str.strip().str.upper() == "NIFTY")
         ]
         if len(new):
-            new = new.rename(
-                columns={"TradDt": "Date", "XpryDt": "Expiry", "ClsPric": "Close"}
-            )
+            new = new.rename(columns={"TradDt": "Date", "XpryDt": "Expiry", "ClsPric": "Close"})
             new["Date"] = pd.to_datetime(new["Date"], errors="coerce")
             new["Expiry"] = pd.to_datetime(new["Expiry"], errors="coerce")
             new["Close"] = pd.to_numeric(new["Close"], errors="coerce")
             new = new.dropna(subset=["Date", "Expiry", "Close"])
-            frames.append(new[["Date", "Expiry", "Close"]])
+            if "NewBrdLotQty" not in new:
+                raise ValueError("UDiFF data must include the historical contract lot size")
+            new["Lot_Size"] = pd.to_numeric(new["NewBrdLotQty"], errors="raise")
+            frames.append(new[["Date", "Expiry", "Close", "Lot_Size"]])
 
     # Fallback: already-normalised intermediate file with no raw schema cols
     if not frames and prenorm_cols.issubset(raw.columns):
@@ -142,12 +156,13 @@ def load_futures(path: str) -> pd.DataFrame:
         df["Expiry"] = pd.to_datetime(df["Expiry"], errors="coerce")
         df["Close"] = pd.to_numeric(df["Close"], errors="coerce")
         df = df.dropna(subset=["Date", "Expiry", "Close"])
-        frames.append(df[["Date", "Expiry", "Close"]])
+        if "Lot_Size" not in df:
+            raise ValueError("Normalised futures data must include Lot_Size")
+        frames.append(df[["Date", "Expiry", "Close", "Lot_Size"]])
 
     if not frames:
         raise ValueError(
-            "Could not identify futures bhavcopy format in "
-            f"{path}. Available columns: {raw.columns.tolist()}"
+            f"Could not identify futures bhavcopy format in {path}. Available columns: {raw.columns.tolist()}"
         )
 
     fut = pd.concat(frames, ignore_index=True)
@@ -161,39 +176,34 @@ def load_futures(path: str) -> pd.DataFrame:
 # -----------------------------------------------------------------------------
 def build_rollover_schedule(futures: pd.DataFrame, trading_dates: pd.DatetimeIndex) -> pd.DataFrame:
     """
-    For each (Year, Month) that appears in the futures data:
-      1. Compute the theoretical last-Thursday expiry.
-      2. If that Thursday is not a trading day (NSE holiday), step back to
-         the previous trading day.
-      3. RolloverDate = the trading day ROLL_DAYS_BEFORE_EXPIRY sessions
-         before the effective expiry.
+    Use observed contract expiries, including holiday-adjusted dates.
+    RolloverDate is five sessions before expiry. Future expiries beyond the
+    available calendar have no rollover date until that calendar is extended.
     """
-    expiry_periods = sorted(futures["Expiry"].dt.to_period("M").unique())
+    expiries = sorted(futures["Expiry"].unique())
     td_array = pd.DatetimeIndex(sorted(trading_dates))
 
     records = []
-    for period in expiry_periods:
-        y, m = period.year, period.month
-        theo = pd.Timestamp(last_thursday(y, m))
-
-        if theo in td_array:
-            eff = theo
+    for expiry in expiries:
+        eff = pd.Timestamp(expiry)
+        period = eff.to_period("M")
+        # Do not fabricate a rollover for contracts expiring after the dataset.
+        if eff > td_array.max():
+            roll_date = pd.NaT
         else:
-            prior = td_array[td_array < theo]
-            eff = prior[-1] if len(prior) > 0 else theo
+            prior = td_array[td_array <= eff]
+            if len(prior) <= ROLL_DAYS_BEFORE_EXPIRY:
+                raise ValueError("Trading calendar has insufficient pre-expiry history")
+            roll_date = prior[-1 - ROLL_DAYS_BEFORE_EXPIRY]
 
-        if eff in td_array:
-            eff_idx = td_array.get_loc(eff)
-            roll_date = td_array[eff_idx - ROLL_DAYS_BEFORE_EXPIRY] if eff_idx >= ROLL_DAYS_BEFORE_EXPIRY else eff
-        else:
-            roll_date = eff
-
-        records.append({
-            "YearMonth": str(period),
-            "TheoreticalExpiry": theo,
-            "EffectiveExpiry": eff,
-            "RolloverDate": roll_date,
-        })
+        records.append(
+            {
+                "YearMonth": str(period),
+                "TheoreticalExpiry": eff,
+                "EffectiveExpiry": eff,
+                "RolloverDate": roll_date,
+            }
+        )
 
     return pd.DataFrame(records)
 
@@ -204,14 +214,17 @@ def build_rollover_schedule(futures: pd.DataFrame, trading_dates: pd.DatetimeInd
 def build_continuous_series(futures: pd.DataFrame, rollover_schedule: pd.DataFrame) -> pd.DataFrame:
     """
     On date D, the active contract is the smallest-expiry contract whose
-    RolloverDate has not yet passed (D <= RolloverDate). Once D exceeds
-    that contract's RolloverDate, we advance to the next expiry.
+    rollover date is still ahead (D < RolloverDate). On the rollover date
+    we advance to the next expiry. The active
+    expiry is stateful and can never move backward if a later date has an
+    incomplete set of contract prices.
     """
     all_dates = sorted(futures["Date"].unique())
     roll_sched = rollover_schedule.sort_values("RolloverDate").reset_index(drop=True)
     rows = []
+    current_expiry = None
 
-    for d in all_dates:
+    for date_index, d in enumerate(all_dates):
         d_ts = pd.Timestamp(d)
         day_data = futures[futures["Date"] == d_ts]
         if day_data.empty:
@@ -221,28 +234,55 @@ def build_continuous_series(futures: pd.DataFrame, rollover_schedule: pd.DataFra
         selected_expiry = None
 
         for exp in available_expiries:
-            exp_period = pd.Timestamp(exp).to_period("M")
-            match = roll_sched[roll_sched["YearMonth"] == str(exp_period)]
+            match = roll_sched[roll_sched["EffectiveExpiry"] == pd.Timestamp(exp)]
             if match.empty:
                 selected_expiry = exp
                 break
             roll_date = match.iloc[0]["RolloverDate"]
-            if d_ts <= roll_date:
+            if pd.Timestamp(exp) >= d_ts and (pd.isna(roll_date) or d_ts < roll_date):
                 selected_expiry = exp
                 break
 
         if selected_expiry is None:
-            selected_expiry = available_expiries[0]
+            raise ValueError(f"No eligible forward futures contract on {d_ts.date()}")
+
+        if current_expiry is not None:
+            if current_expiry in available_expiries and selected_expiry < current_expiry:
+                selected_expiry = current_expiry
+            elif selected_expiry < current_expiry:
+                forward_expiries = [expiry for expiry in available_expiries if expiry > current_expiry]
+                if not forward_expiries:
+                    continue
+                selected_expiry = forward_expiries[0]
 
         price_row = day_data[day_data["Expiry"] == selected_expiry]
         if price_row.empty:
             continue
 
-        rows.append({
-            "Date": d_ts,
-            "Futures_Price": price_row["Close"].values[0],
-            "Active_Expiry": selected_expiry,
-        })
+        current_expiry = selected_expiry
+
+        previous_close = np.nan
+        previous_lot_size = np.nan
+        if date_index > 0:
+            previous_date = pd.Timestamp(all_dates[date_index - 1])
+            previous_price_row = futures[
+                (futures["Date"] == previous_date) & (futures["Expiry"] == selected_expiry)
+            ]
+            if not previous_price_row.empty:
+                previous_close = previous_price_row["Close"].iloc[0]
+                previous_lot_size = previous_price_row["Lot_Size"].iloc[0]
+
+        rows.append(
+            {
+                "Date": d_ts,
+                "Futures_Price": price_row["Close"].values[0],
+                "Active_Expiry": selected_expiry,
+                "Previous_Active_Close": previous_close,
+                "Lot_Size": price_row["Lot_Size"].iloc[0],
+                "Previous_Lot_Size": previous_lot_size,
+                "Previous_Date": pd.Timestamp(all_dates[date_index - 1]) if date_index > 0 else pd.NaT,
+            }
+        )
 
     return pd.DataFrame(rows)
 
@@ -251,20 +291,62 @@ def build_continuous_series(futures: pd.DataFrame, rollover_schedule: pd.DataFra
 # Step 4 - Merge & compute returns / basis
 # -----------------------------------------------------------------------------
 def build_master(spot: pd.DataFrame, cont_futures: pd.DataFrame) -> pd.DataFrame:
-    merged = pd.merge(spot, cont_futures[["Date", "Futures_Price"]], on="Date", how="inner")
+    if set(spot["Date"]) != set(cont_futures["Date"]):
+        raise ValueError("Spot and futures calendars have gaps; repair missing sessions first")
+    merged = pd.merge(
+        spot,
+        cont_futures[
+            [
+                "Date",
+                "Futures_Price",
+                "Active_Expiry",
+                "Previous_Active_Close",
+                "Lot_Size",
+                "Previous_Lot_Size",
+                "Previous_Date",
+            ]
+        ],
+        on="Date",
+        how="inner",
+    )
     merged = merged.sort_values("Date").reset_index(drop=True)
 
     merged = merged[(merged["Spot_Price"] > 0) & (merged["Futures_Price"] > 0)]
     merged = merged.dropna(subset=["Spot_Price", "Futures_Price"])
 
-    merged["Spot_Return"] = np.log(merged["Spot_Price"] / merged["Spot_Price"].shift(1))
-    merged["Futures_Return"] = np.log(merged["Futures_Price"] / merged["Futures_Price"].shift(1))
+    merged["Previous_Spot_Price"] = merged["Spot_Price"].shift(1)
+    # Reject mismatched intervals rather than comparing a multi-day spot move
+    # with a one-day futures move when either series has missing sessions.
+    valid_interval = merged["Previous_Date"].eq(merged["Date"].shift(1))
+    if not valid_interval.iloc[1:].all():
+        raise ValueError("Spot and futures calendars have gaps; repair missing sessions first")
+    merged["Spot_Return"] = np.log(merged["Spot_Price"] / merged["Previous_Spot_Price"])
+    merged["Futures_Return"] = np.log(merged["Futures_Price"] / merged["Previous_Active_Close"])
+    if merged["Futures_Return"].iloc[1:].isna().any():
+        raise ValueError("Missing previous same-contract price; repair the futures archive first")
     merged["Basis"] = merged["Futures_Price"] - merged["Spot_Price"]
+    merged["Is_Roll_Day"] = merged["Active_Expiry"].ne(merged["Active_Expiry"].shift(1))
+    merged.loc[merged.index[0], "Is_Roll_Day"] = False
 
     merged = merged.dropna(subset=["Spot_Return", "Futures_Return"])
 
-    master = merged[["Date", "Spot_Price", "Futures_Price",
-                      "Spot_Return", "Futures_Return", "Basis"]].copy()
+    master = merged[
+        [
+            "Date",
+            "Spot_Price",
+            "Futures_Price",
+            "Spot_Return",
+            "Futures_Return",
+            "Basis",
+            "Active_Expiry",
+            "Is_Roll_Day",
+            "Previous_Active_Close",
+            "Previous_Spot_Price",
+            "Lot_Size",
+            "Previous_Lot_Size",
+            "Previous_Date",
+        ]
+    ].copy()
     master["Date"] = master["Date"].dt.strftime("%Y-%m-%d")
     return master
 
@@ -295,9 +377,11 @@ def print_quality_summary(spot_raw, futures_raw, master, rollover_schedule, cont
 
     print(f"\nFutures rollover schedule ({ROLL_DAYS_BEFORE_EXPIRY} trading days before expiry):")
     print(f"  {'YearMonth':<12}  {'EffectiveExpiry':<18}  {'RolloverDate'}")
-    print(f"  {'-'*12}  {'-'*18}  {'-'*12}")
+    print(f"  {'-' * 12}  {'-' * 18}  {'-' * 12}")
     for _, row in rollover_schedule.iterrows():
-        print(f"  {row['YearMonth']:<12}  {str(row['EffectiveExpiry'].date()):<18}  {row['RolloverDate'].date()}")
+        print(
+            f"  {row['YearMonth']:<12}  {str(row['EffectiveExpiry'].date()):<18}  {row['RolloverDate'].date()}"
+        )
 
     print("\nReturns summary (log returns):")
     for col in ["Spot_Return", "Futures_Return"]:
@@ -313,22 +397,25 @@ def print_quality_summary(spot_raw, futures_raw, master, rollover_schedule, cont
 # Main
 # -----------------------------------------------------------------------------
 def main():
-    for path in [SPOT_CSV, FUTURES_CSV]:
+    parser = argparse.ArgumentParser(description="Build the study using actual contract expiry dates")
+    parser.add_argument("--spot", default=SPOT_CSV)
+    parser.add_argument("--futures", default=FUTURES_CSV)
+    parser.add_argument("--output", default=MASTER_CSV)
+    args = parser.parse_args()
+    for path in [args.spot, args.futures]:
         if not os.path.exists(path):
             print(f"ERROR: {path} not found. Run fetch_nse_data.py first.")
             sys.exit(1)
 
     print("Loading spot data...")
-    spot = load_spot(SPOT_CSV)
+    spot = load_spot(args.spot)
     print(f"  {len(spot)} rows loaded from {SPOT_CSV}")
 
     print("Loading futures data...")
-    futures_raw = load_futures(FUTURES_CSV)
+    futures_raw = load_futures(args.futures)
     print(f"  {len(futures_raw)} rows loaded from {FUTURES_CSV}")
 
-    trading_dates = pd.DatetimeIndex(
-        sorted(set(spot["Date"].tolist()) | set(futures_raw["Date"].tolist()))
-    )
+    trading_dates = pd.DatetimeIndex(sorted(set(spot["Date"].tolist()) | set(futures_raw["Date"].tolist())))
     print(f"  Trading calendar: {len(trading_dates)} unique dates")
 
     print("Building rollover schedule...")
@@ -343,7 +430,7 @@ def main():
     master = build_master(spot, cont_futures)
     print(f"  {len(master)} rows in nifty_master.csv")
 
-    master.to_csv(MASTER_CSV, index=False)
+    master.to_csv(args.output, index=False, lineterminator="\n")
     print(f"\nSaved: {MASTER_CSV}")
 
     print_quality_summary(spot, futures_raw, master, rollover_schedule, cont_futures)

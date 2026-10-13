@@ -459,7 +459,7 @@ A sample run of this project might report:
 - **Limited sample period** — a few months of data won't capture every kind of market condition (crashes, rallies, sideways markets).
 - **Historical ≠ future** — `h*` is estimated from the past; there's no guarantee it holds going forward.
 - **Constant-hedge assumption** — the main result uses one ratio for the whole period, even though the rolling analysis shows this can drift.
-- **No transaction costs** — brokerage, bid-ask spreads, taxes, and rollover costs aren't modeled, and they reduce real-world performance.
+- **Costs are assumptions** — the portfolio ledger includes configurable fees, slippage, rollover costs, and margin funding. These are scenarios; taxes by category and actual broker/exchange charges are not replicated.
 - **No margin modeling** — futures require margin; this project's return-based analysis doesn't simulate the cash-flow/margin side of actually running the position.
 - **Contract sizing not modeled** — turning `h*` into an actual whole number of futures contracts requires knowing contract multipliers and current notional values (see 5.7).
 
@@ -536,3 +536,12 @@ Market Data → Returns → Spot-Futures Relationship
 | Maximum drawdown | The single largest peak-to-trough decline observed |
 | Rollover | Switching from an expiring futures contract to the next one |
 | Continuous futures series | A stitched-together futures price series spanning multiple contract expiries |
+
+
+## Updated portfolio accounting and validation
+
+The log-return equations above describe the statistical study. A weighted difference of log returns is not an exact futures portfolio return. The dashboard now uses a separate cash ledger for rupee outcomes: fixed index-equivalent spot units plus historical whole futures lots, cash-marked daily using price differences. Costs cover entry, resizing, both rollover legs, and final exit. Margin is externally funded collateral; only funding expense reduces equity. Calendar days count for funding. Closing prices approximate exchange settlement prices.
+
+Strategies are compared over identical out-of-sample dates. Fixed h* is fitted before the test period; the rolling h* uses only earlier returns. The worst-day tab uses this prior-fitted portfolio ledger. Starting capital is included in drawdown. Contract expiries and UDiFF lot sizes come from the actual archive rather than current contract rules.
+
+See README.md and generated results files for current numerical results and assumptions. Any illustrative numbers earlier in this guide are examples, not a fresh backtest.

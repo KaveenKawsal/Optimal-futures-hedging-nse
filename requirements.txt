@@ -1,4 +1,6 @@
-pandas
-numpy
-streamlit
-plotly
+pandas==3.0.6
+numpy==2.5.4
+streamlit==1.65.0
+plotly==7.1.0
+jugaad-data==0.35.10
+requests==2.34.2
