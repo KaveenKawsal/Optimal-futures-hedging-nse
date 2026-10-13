@@ -1,0 +1,143 @@
+{
+  "dataset": "nifty_master.csv",
+  "sha256": "8f746adc56badbda83a760bd8124549642ddcd8300ce3185a01753c5e26433ec",
+  "rows": 245,
+  "start": "2024-01-02",
+  "end": "2024-12-31",
+  "missing_values": 0,
+  "duplicate_dates": 0,
+  "observations_by_year": {
+    "2024": 245
+  },
+  "full_sample_statistical_fit": {
+    "cov_spot_futures": 7.863906206747485e-05,
+    "var_futures": 7.969572107399723e-05,
+    "h_star": 0.9867413332575123,
+    "ols_beta": 0.986741333257512,
+    "ols_alpha": 0.0002914502856049158,
+    "r_squared": 0.976022373531165,
+    "n_obs": 245
+  },
+  "full_sample_effectiveness": {
+    "var_unhedged": 7.950269896974103e-05,
+    "var_hedged": 1.9062860191606837e-06,
+    "vol_unhedged_daily": 0.008916428599486513,
+    "vol_hedged_daily": 0.0013806831711731275,
+    "vol_unhedged_annualized": 0.14154391594263152,
+    "vol_hedged_annualized": 0.021917665861776712,
+    "hedging_effectiveness_pct": 97.6022373531165,
+    "max_drawdown_unhedged": -10.932806429648933,
+    "max_drawdown_hedged": -0.5771324480502991
+  },
+  "common_test_training_rows": 122,
+  "common_test_statistical_comparison": [
+    {
+      "Strategy": "No hedge",
+      "Mean hedge ratio": 0.0,
+      "Start": "2024-07-04",
+      "End": "2024-12-31",
+      "Observations": 123,
+      "Annualized volatility": 0.12479877752689042,
+      "Max drawdown (%)": -10.932806429648913,
+      "Variance reduction (%)": 0.0
+    },
+    {
+      "Strategy": "One-for-one",
+      "Mean hedge ratio": 1.0,
+      "Start": "2024-07-04",
+      "End": "2024-12-31",
+      "Observations": 123,
+      "Annualized volatility": 0.021244475508482574,
+      "Max drawdown (%)": -0.5347028168569321,
+      "Variance reduction (%)": 97.10218027251348
+    },
+    {
+      "Strategy": "Fixed training h*",
+      "Mean hedge ratio": 0.9704379044489174,
+      "Start": "2024-07-04",
+      "End": "2024-12-31",
+      "Observations": 123,
+      "Annualized volatility": 0.021822651704356807,
+      "Max drawdown (%)": -0.6292809430333651,
+      "Variance reduction (%)": 96.9423034721476
+    },
+    {
+      "Strategy": "Rolling prior-window h*",
+      "Mean hedge ratio": 1.000792583100904,
+      "Start": "2024-07-04",
+      "End": "2024-12-31",
+      "Observations": 123,
+      "Annualized volatility": 0.021505239031631623,
+      "Max drawdown (%)": -0.5247635644498863,
+      "Variance reduction (%)": 97.03060559552178
+    }
+  ],
+  "portfolio_initial_spot_capital": 2500000,
+  "portfolio_assumptions": {
+    "fee_bps": 1.0,
+    "slippage_bps": 1.0,
+    "margin_fraction": 0.12,
+    "annual_funding_rate": 0.08,
+    "rounding": "down"
+  },
+  "common_test_portfolios": [
+    {
+      "Strategy": "No hedge",
+      "Observations": 123,
+      "Net profit (₹)": -66055.21586066345,
+      "Annualized volatility": 0.12469219343145489,
+      "Max drawdown (%)": -10.93280642964901,
+      "Variance reduction (%)": 0.0,
+      "Trading costs (₹)": 0.0,
+      "Funding costs (₹)": 0.0,
+      "Peak margin (₹)": 0.0,
+      "Peak cash deficit (₹)": 0.0,
+      "Peak external cash needed (₹)": 0.0
+    },
+    {
+      "Strategy": "One-for-one",
+      "Observations": 123,
+      "Net profit (₹)": 53757.13958317181,
+      "Annualized volatility": 0.02203297248892335,
+      "Max drawdown (%)": -0.6561595540974156,
+      "Variance reduction (%)": 96.87775013717315,
+      "Trading costs (₹)": 6870.875,
+      "Funding costs (₹)": 11761.769556164383,
+      "Peak margin (₹)": 316141.8,
+      "Peak cash deficit (₹)": 172473.99087123317,
+      "Peak external cash needed (₹)": 488180.1908712332
+    },
+    {
+      "Strategy": "Fixed training h*",
+      "Observations": 123,
+      "Net profit (₹)": 23126.23358659679,
+      "Annualized volatility": 0.04042748674909908,
+      "Max drawdown (%)": -2.636071704043546,
+      "Variance reduction (%)": 89.48825159346659,
+      "Trading costs (₹)": 5406.800749999999,
+      "Funding costs (₹)": 8837.999802739725,
+      "Peak margin (₹)": 304275.6,
+      "Peak cash deficit (₹)": 130033.31028904131,
+      "Peak external cash needed (₹)": 369043.70209863014
+    },
+    {
+      "Strategy": "Rolling prior-window h*",
+      "Observations": 123,
+      "Net profit (₹)": 75806.36415508995,
+      "Annualized volatility": 0.028077139269695017,
+      "Max drawdown (%)": -1.2217951114581578,
+      "Variance reduction (%)": 94.92977557281067,
+      "Trading costs (₹)": 6621.193250000001,
+      "Funding costs (₹)": 10838.476734246575,
+      "Peak margin (₹)": 316141.8,
+      "Peak cash deficit (₹)": 150424.76629931523,
+      "Peak external cash needed (₹)": 466130.9662993152
+    }
+  ],
+  "limits": [
+    "Closing-price marks approximate daily settlement",
+    "Index-equivalent spot holding excludes dividends and tracking error",
+    "Margin is externally funded and is a scenario, not historical SPAN",
+    "Costs are assumptions, not broker quotations"
+  ]
+}
